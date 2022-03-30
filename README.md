@@ -31,7 +31,7 @@ To do so, it starts an HTTP server that handles the request's lifecycle like API
 
 **Features:**
 
-- [Node.js](https://nodejs.org), [Python](https://www.python.org), [Ruby](https://www.ruby-lang.org) <!-- and [Go](https://golang.org) --> λ runtimes.
+- [Node.js](https://nodejs.org), [Python](https://www.python.org), [Ruby](https://www.ruby-lang.org) and [Go](https://golang.org) λ runtimes.
 - Velocity templates support.
 - Lazy loading of your handler files.
 - And more: integrations, authorizers, proxies, timeouts, responseParameters, HTTPS, CORS, etc...
@@ -49,6 +49,7 @@ This plugin is updated by its users, I just do maintenance and ensure that PRs a
 - [Custom authorizers](#custom-authorizers)
 - [Remote authorizers](#remote-authorizers)
 - [JWT authorizers](#jwt-authorizers)
+- [Serverless plugin authorizers](#serverless-plugin-authorizers)
 - [Custom headers](#custom-headers)
 - [Environment variables](#environment-variables)
 - [AWS API Gateway Features](#aws-api-gateway-features)
@@ -115,6 +116,7 @@ All CLI options are optional:
 --corsDisallowCredentials   When provided, the default Access-Control-Allow-Credentials header value will be passed as 'false'. Default: true
 --corsExposedHeaders        Used as additional Access-Control-Exposed-Headers header value for responses. Delimit multiple values with commas. Default: 'WWW-Authenticate,Server-Authorization'
 --disableCookieValidation   Used to disable cookie-validation on hapi.js-server
+--disableScheduledEvents    Disables all scheduled events. Overrides configurations in serverless.yml.
 --dockerHost                The host name of Docker. Default: localhost
 --dockerHostServicePath     Defines service path which is used by SLS running inside Docker container
 --dockerNetwork             The network that the Docker container will connect to
@@ -182,7 +184,7 @@ const lambda = new Lambda({
 All your lambdas can then be invoked in a handler using
 
 ```js
-exports.handler = async function() {
+exports.handler = async function () {
   const params = {
     // FunctionName is composed of: service name - stage - function name, e.g.
     FunctionName: 'myServiceName-dev-invokedHandler',
@@ -221,6 +223,7 @@ offline: Function names exposed for local invocation by aws-sdk:
 
 To list the available manual invocation paths exposed for targeting
 by `aws-sdk` and `aws-cli`, use `SLS_DEBUG=*` with `serverless offline`. After the invoke server starts up, full list of endpoints will be displayed:
+
 ```
 SLS_DEBUG=* serverless offline
 ...
@@ -246,55 +249,67 @@ Will be `"true"` in your handlers and thorough the plugin.
 ## Docker and Layers
 
 To use layers with serverless-offline, you need to have the `useDocker` option set to true. This can either be by using the `--useDocker` command, or in your serverless.yml like this:
+
 ```yml
 custom:
   serverless-offline:
     useDocker: true
 ```
+
 This will allow the docker container to look up any information about layers, download and use them. For this to work, you must be using:
-* AWS as a provider, it won't work with other provider types.
-* Layers that are compatible with your runtime.
-* ARNs for layers. Local layers aren't supported as yet.
-* A local AWS account set-up that can query and download layers.
+
+- AWS as a provider, it won't work with other provider types.
+- Layers that are compatible with your runtime.
+- ARNs for layers. Local layers aren't supported as yet.
+- A local AWS account set-up that can query and download layers.
 
 If you're using least-privilege principals for your AWS roles, this policy should get you by:
+
 ```json
 {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": "lambda:GetLayerVersion",
-            "Resource": "arn:aws:lambda:*:*:layer:*:*"
-        }
-    ]
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "lambda:GetLayerVersion",
+      "Resource": "arn:aws:lambda:*:*:layer:*:*"
+    }
+  ]
 }
 ```
+
 Once you run a function that boots up the Docker container, it'll look through the layers for that function, download them in order to your layers folder, and save a hash of your layers so it can be re-used in future. You'll only need to re-download your layers if they change in the future. If you want your layers to re-download, simply remove your layers folder.
 
 You should then be able to invoke functions as normal, and they're executed against the layers in your docker container.
 
 ### Additional Options
+
 There are 5 additional options available for Docker and Layer usage.
-* dockerHost
-* dockerHostServicePath
-* dockerNetwork
-* dockerReadOnly
-* layersDir
+
+- dockerHost
+- dockerHostServicePath
+- dockerNetwork
+- dockerReadOnly
+- layersDir
 
 #### dockerHost
+
 When running Docker Lambda inside another Docker container, you may need to configure the host name for the host machine to resolve networking issues between Docker Lambda and the host. Typically in such cases you would set this to `host.docker.internal`.
 
 #### dockerHostServicePath
+
 When running Docker Lambda inside another Docker container, you may need to override the code path that gets mounted to the Docker Lambda container relative to the host machine. Typically in such cases you would set this to `${PWD}`.
 
 #### dockerNetwork
+
 When running Docker Lambda inside another Docker container, you may need to override network that Docker Lambda connects to in order to communicate with other containers.
 
 #### dockerReadOnly
+
 For certain programming languages and frameworks, it's desirable to be able to write to the filesystem for things like testing with local SQLite databases, or other testing-only modifications. For this, you can set `dockerReadOnly: false`, and this will allow local filesystem modifications. This does not strictly mimic AWS Lambda, as Lambda has a Read-Only filesystem, so this should be used as a last resort.
 
 #### layersDir
+
 By default layers are downloaded on a per-project basis, however, if you want to share them across projects, you can download them to a common place. For example, `layersDir: /tmp/layers` would allow them to be shared across projects. Make sure when using this setting that the directory you are writing layers to can be shared by docker.
 
 ## Token authorizers
@@ -346,14 +361,36 @@ defined in the `serverless.yml` can be used to validate the token and scopes in 
 the signature of the JWT is not validated with the defined issuer. Since this is a security risk, this feature is
 only enabled with the `--ignoreJWTSignature` flag. Make sure to only set this flag for local development work.
 
+## Serverless plugin authorizers
+
+If your authentication needs are custom and not satisfied by the existing capabilities of the Serverless offline project, you can inject your own authentication strategy. To inject a custom strategy for Lambda invocation, you define a custom variable under `serverless-offline` called `authenticationProvider` in the serverless.yml file. The value of the custom variable will be used to `require(your authenticationProvider value)` where the location is expected to return a function with the following signature.
+
+```js
+module.exports = function (endpoint, functionKey, method, path) {
+  return {
+    name: 'your strategy name',
+    scheme: 'your scheme name',
+
+    getAuthenticateFunction: () => ({
+      async authenticate(request, h) {
+        // your implementation
+      },
+    }),
+  }
+}
+```
+
+A working example of injecting a custom authorization provider can be found in the projects integration tests under the folder `custom-authentication`.
+
 ## Custom headers
 
 You are able to use some custom headers in your request to gain more control over the requestContext object.
 
-| Header                          | Event key                                                   |
-| ------------------------------- | ----------------------------------------------------------- |
-| cognito-identity-id             | event.requestContext.identity.cognitoIdentityId             |
-| cognito-authentication-provider | event.requestContext.identity.cognitoAuthenticationProvider |
+| Header                          | Event key                                                   | Example                                                                           |
+| ------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| cognito-identity-id             | event.requestContext.identity.cognitoIdentityId             |                                                                                   |
+| cognito-authentication-provider | event.requestContext.identity.cognitoAuthenticationProvider |                                                                                   |
+| sls-offline-authorizer-override | event.requestContext.authorizer                             | { "iam": {"cognitoUser": { "amr": ["unauthenticated"], "identityId": "abc123" }}} |
 
 By doing this you are now able to change those values using a custom header. This can help you with easier authentication or retrieving the userId from a `cognitoAuthenticationProvider` value.
 
@@ -494,8 +531,6 @@ Where the `event` is received in the lambda handler function.
 
 There's support for [websocketsApiRouteSelectionExpression](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-websocket-api-selection-expressions.html) in it's basic form: `$request.body.x.y.z`, where the default value is `$request.body.action`.
 
-Authorizers and wss:// are currently not supported.
-
 ## Usage with Webpack
 
 Use [serverless-webpack](https://github.com/serverless-heaven/serverless-webpack) to compile and bundle your ES-next code
@@ -578,7 +613,7 @@ Downstream plugins may tie into the `before:offline:start:end` hook to release r
 ## Simulation quality
 
 This plugin simulates API Gateway for many practical purposes, good enough for development - but is not a perfect simulator.
-Specifically, Lambda currently runs on Node.js v10.x and v12.x ([AWS Docs](https://docs.aws.amazon.com/lambda/latest/dg/current-supported-versions.html)), whereas _Offline_ runs on your own runtime where no memory limits are enforced.
+Specifically, Lambda currently runs on Node.js v10.x, v12.x and v14.x ([AWS Docs](https://docs.aws.amazon.com/lambda/latest/dg/current-supported-versions.html)), whereas _Offline_ runs on your own runtime where no memory limits are enforced.
 
 ## Usage with serverless-dynamodb-local and serverless-webpack plugin
 
